@@ -1,0 +1,4 @@
+Built from danemadsen/nerthus at tag v1.0.0
+https://github.com/danemadsen/nerthus/tree/v1.0.0
+Built with the project's own web build (crates/nerthus-app/web/build.sh). One change: the WebAssembly is over GitHub's 100 MB file limit, so it is stored as nerthus_bg.wasm.part0, part1, ... and index.html joins the parts as it loads them.
+Nerthus is MIT; the full source for this version is at the address above.

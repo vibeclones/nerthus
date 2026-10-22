@@ -1,0 +1,100 @@
+name: Build upstream releases
+
+on:
+  schedule:
+    - cron: "41 6 * * *"
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "How many of the newest releases to consider"
+        required: false
+        default: "100"
+
+permissions:
+  contents: write
+  pages: write
+
+concurrency: build
+
+env:
+  UP: danemadsen/nerthus
+  APP: nerthus
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find releases we don't have yet
+        run: |
+          : > todo.txt
+          tags=$(gh release list -R "$UP" --limit "${{ inputs.limit || '100' }}" --exclude-drafts --exclude-pre-releases --json tagName -q '.[].tagName')
+          for tag in $tags; do
+            [ -d "v${tag#v}" ] || echo "$tag" >> todo.txt
+          done
+          cat todo.txt
+          if [ -s todo.txt ]; then echo "NEED=true" >> "$GITHUB_ENV"; fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: env.NEED == 'true'
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Build each new release
+        if: env.NEED == 'true'
+        run: |
+          # One clone for every tag, so the Rust build cache (target/) carries over between releases.
+          git clone --quiet --filter=blob:none "https://github.com/$UP.git" up
+          while read -r tag; do
+            ver="${tag#v}"
+            echo "::group::Build $tag"
+            git -C up clean -fdxq -e target
+            git -C up checkout --quiet --force "tags/$tag"
+            # The wasm-bindgen command has to be the version of the library in this tag's Cargo.lock.
+            wb=$(sed -n '/^name = "wasm-bindgen"$/{n;s/^version = "\(.*\)"$/\1/p;}' up/Cargo.lock)
+            [ -x "$HOME/wb-$wb/bin/wasm-bindgen" ] || cargo install wasm-bindgen-cli --version "$wb" --locked --root "$HOME/wb-$wb"
+            if PATH="$HOME/wb-$wb/bin:$PATH" sh up/crates/nerthus-app/web/build.sh "$PWD/out" --locked && [ -f out/index.html ]; then
+              mkdir "v$ver"
+              cp -a out/. "v$ver/"
+              cp up/LICENSE* "v$ver/" 2>/dev/null || true
+              printf 'Built from %s at tag %s\nhttps://github.com/%s/tree/%s\nBuilt with the project'"'"'s own web build (crates/nerthus-app/web/build.sh); nothing was changed.\nNerthus is MIT; the full source for this version is at the address above.\n' "$UP" "$tag" "$UP" "$tag" > "v$ver/SOURCE.txt"
+            else
+              echo "::warning::build failed for $tag"
+            fi
+            rm -rf out
+            echo "::endgroup::"
+          done < todo.txt
+          rm -rf up
+
+      - name: Record versions that could not be hosted
+        run: bash scripts/skip.sh sync todo.txt
+
+      - name: Update latest and versions.json
+        run: |
+          versions=$(find . -maxdepth 1 -type d -name 'v[0-9]*' -printf '%f\n' | sed 's/^v//' | sort -rV)
+          [ -n "$versions" ] || { echo "No versions built"; exit 0; }
+          latest=$(echo "$versions" | head -n1)
+          mkdir -p latest
+          printf '<!doctype html><meta charset="utf-8"><title>%s</title><meta http-equiv="refresh" content="0; url=../v%s/"><link rel="canonical" href="../v%s/"><a href="../v%s/">Open %s %s</a>\n' "$APP" "$latest" "$latest" "$latest" "$APP" "$latest" > latest/index.html
+          echo "$versions" | jq -R . | jq -s --arg latest "$latest" '{latest: $latest, versions: .}' > versions.json
+          cat versions.json
+
+      - name: Keep the site under its size cap
+        run: bash scripts/prune.sh
+
+      - name: Commit and request a Pages build
+        run: |
+          rm -f todo.txt
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Nothing new"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Add upstream release builds"
+          git push
+          gh api -X POST "repos/${{ github.repository }}/pages/builds"

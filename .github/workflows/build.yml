@@ -59,8 +59,10 @@ jobs:
             if PATH="$HOME/wb-$wb/bin:$PATH" sh up/crates/nerthus-app/web/build.sh "$PWD/out" --locked && [ -f out/index.html ]; then
               mkdir "v$ver"
               cp -a out/. "v$ver/"
+              # GitHub refuses files over 100 MB; the WebAssembly is bigger, so it is stored in parts (scripts/split.py).
+              python3 scripts/split.py "v$ver" || { echo "::warning::could not split v$ver"; rm -rf "v$ver"; rm -rf out; echo "::endgroup::"; continue; }
               cp up/LICENSE* "v$ver/" 2>/dev/null || true
-              printf 'Built from %s at tag %s\nhttps://github.com/%s/tree/%s\nBuilt with the project'"'"'s own web build (crates/nerthus-app/web/build.sh); nothing was changed.\nNerthus is MIT; the full source for this version is at the address above.\n' "$UP" "$tag" "$UP" "$tag" > "v$ver/SOURCE.txt"
+              printf 'Built from %s at tag %s\nhttps://github.com/%s/tree/%s\nBuilt with the project'"'"'s own web build (crates/nerthus-app/web/build.sh). One change: the WebAssembly is over GitHub'"'"'s 100 MB file limit, so it is stored as nerthus_bg.wasm.part0, part1, ... and index.html joins the parts as it loads them.\nNerthus is MIT; the full source for this version is at the address above.\n' "$UP" "$tag" "$UP" "$tag" > "v$ver/SOURCE.txt"
             else
               echo "::warning::build failed for $tag"
             fi
